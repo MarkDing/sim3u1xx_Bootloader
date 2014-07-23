@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset='utf-8' />
+    <meta http-equiv="X-UA-Compatible" content="chrome=1" />
+    <meta name="description" content="Sim3u1xx bootloader : Bootloader for ARM Cortex M3 UART interface" />
+
+    <link rel="stylesheet" type="text/css" media="screen" href="stylesheets/stylesheet.css">
+
+    <title>Sim3u1xx bootloader</title>
+  </head>
+
+  <body>
+
+    <!-- HEADER -->
+    <div id="header_wrap" class="outer">
+        <header class="inner">
+          <a id="forkme_banner" href="https://github.com/MarkDing/sim3u1xx_Bootloader">View on GitHub</a>
+
+          <h1 id="project_title">Sim3u1xx bootloader</h1>
+          <h2 id="project_tagline">Bootloader for ARM Cortex M3 UART interface</h2>
+
+            <section id="downloads">
+              <a class="zip_download_link" href="https://github.com/MarkDing/sim3u1xx_Bootloader/zipball/master">Download this project as a .zip file</a>
+              <a class="tar_download_link" href="https://github.com/MarkDing/sim3u1xx_Bootloader/tarball/master">Download this project as a tar.gz file</a>
+            </section>
+        </header>
+    </div>
+
+    <!-- MAIN CONTENT -->
+    <div id="main_content_wrap" class="outer">
+      <section id="main_content" class="inner">
+        <h1>
+<a name="make-own-bootloader-for-arm-cortex-m3" class="anchor" href="#make-own-bootloader-for-arm-cortex-m3"><span class="octicon octicon-link"></span></a>Make own bootloader for ARM Cortex M3</h1>
+
+<h2>
+<a name="1-bootloader-overview" class="anchor" href="#1-bootloader-overview"><span class="octicon octicon-link"></span></a>1 Bootloader overview</h2>
+
+<p>A Bootloader is a small application that is used to load new user applications to devices. After it is loaded, the new user application is able to run in the MCU. It works with two modes, user application and Bootloader mode. </p>
+
+<p>We are discussing common way to implement Bootloader on your own Arm Cortez  M3. And we choose Silicon labs SIM3U167 MCU as example for making Bootloader. </p>
+
+<h2>
+<a name="2-bootloader-design-method" class="anchor" href="#2-bootloader-design-method"><span class="octicon octicon-link"></span></a>2 Bootloader design method</h2>
+
+<h3>
+<a name="21--bootloader-need-to-run-in-sram" class="anchor" href="#21--bootloader-need-to-run-in-sram"><span class="octicon octicon-link"></span></a>2.1  Bootloader need to run in SRAM</h3>
+
+<h3>
+<a name="211-bootloader-behavior" class="anchor" href="#211-bootloader-behavior"><span class="octicon octicon-link"></span></a>2.1.1 Bootloader behavior</h3>
+
+<p>Bootloader is an application which runs from internal flash, in case of update Bootloader itself requirement, the Bootloader code needed to be copied into internal SRAM and run.</p>
+
+<ul>
+<li>The Bootloader code address need to set in SRAM in link file</li>
+<li>The vector table entry needs to update from flash to SRAM after copying Bootloader into SRAM.</li>
+<li>The Reset vector address we want to keep its original address, since it is hardware behavior.</li>
+</ul><h3>
+<a name="212-arm-cortex-m3-internal-memory-map" class="anchor" href="#212-arm-cortex-m3-internal-memory-map"><span class="octicon octicon-link"></span></a>2.1.2 Arm Cortex M3 internal memory map</h3>
+
+<ul>
+<li>Internal flash address (0x00000000-0x1FFFFFFF).</li>
+<li>Internal SRAM address (0x20000000-0x3FFFFFFF).</li>
+<li>Peripherals address (0x40000000-0x5FFFFFFF).</li>
+<li>System levels address (0xE0000000-0xFFFFFFFF).</li>
+</ul><p>So base on above memory, we need to copy code from internal flash address to internal SRAM address. And access UART peripheral register in Peripherals address, and change vector table address need to access register in System levels address.</p>
+
+<h3>
+<a name="213-link-file" class="anchor" href="#213-link-file"><span class="octicon octicon-link"></span></a>2.1.3 Link file</h3>
+
+<p>To make sure Bootloader code is located in SRAM, we need to specific the address setting in link file.  Now we have a Bootloader_link.ld as our link file. We would talk detail about how to write link file, we assume that you 
+already know the basic knowledge about link file.</p>
+
+<pre lang="ld"><code>.text 0x20000000 : AT (0x00000000)
+{
+    . = ALIGN(4);
+    _text = .;
+    KEEP(*(.isr_vector))
+    *(.text*)
+    *(.rodata*)
+    _etext = .;
+}
+</code></pre>
+
+<p>The first line <code>.text 0x20000000 : AT (0x00000000)</code> means .text section load address start from 0x20000000, store address from 0x00000000.  </p>
+
+<p>Inside the description, we put <code>.isr_vector</code>, <code>*(.text*)</code> and <code>*(.rodata*)</code> in .text section. The <code>.isr_vector</code> is vector entry; we put it in front of Bootloader code.</p>
+
+<p>And then we have other two sections .data and .bss</p>
+
+<pre lang="ld"><code>.data 0x20000000 + SIZEOF(.text) : AT (LOADADDR(.text) + SIZEOF(.text))
+{
+    _data = .;
+    *(.data*)
+    _edata = .;
+}
+
+.bss 0x20000000 + SIZEOF(.text) + SIZEOF(.data) :
+    AT (LOADADDR(.data) + SIZEOF(.data))
+{
+    _bss = .;
+    *(.bss*)
+    *(COMMON)
+    _ebss = .;
+}
+</code></pre>
+
+<p>And now the link file is ready.</p>
+
+<h3>
+<a name="214-vector-table-introduction" class="anchor" href="#214-vector-table-introduction"><span class="octicon octicon-link"></span></a>2.1.4 Vector table introduction.</h3>
+
+<p>By default Arm Cortex M3 vector table starts at memory address 0. The vector table can be relocated to other memory locations in the code or Random Access Memroy(RAM) region where the RAM is so that we can change the handlers during run time. This is down by settting a register in the NVIC called the vector table offset register (address <code>0xE000ED08</code>). You need to have the following (at a minimum).</p>
+
+<ul>
+<li>Initial main stack pointer value</li>
+<li>Reset vector</li>
+<li>NMI vector</li>
+<li>Hard fault vector</li>
+</ul><h3>
+<a name="215-vector-table-in-startup-file" class="anchor" href="#215-vector-table-in-startup-file"><span class="octicon octicon-link"></span></a>2.1.5 Vector table in startup file</h3>
+
+<p>We prepare startup_sim3u1xx.S for our startup file. In this file, we will have the vector table, code copy from flash to SRAM, jump to user application code. Let us have a look on vector table first. We can see .isr_vector in link file is the vector table section name.</p>
+
+<div class="highlight highlight-asm"><pre>    <span class="nf">.section</span> <span class="nv">.isr_vector</span>
+<span class="nl">Vectors:</span>
+    <span class="nf">.word</span>   <span class="mh">0x20008000</span>                  <span class="o">//</span> <span class="nv">The</span> <span class="nv">initial</span> <span class="nv">stack</span> <span class="nv">pointer</span>
+    <span class="nf">.word</span>   <span class="nv">ResetISR</span> <span class="o">-</span> <span class="mh">0x20000000</span>       <span class="o">//</span> <span class="nv">The</span> <span class="nv">reset</span> <span class="nv">handler</span>
+    <span class="nf">.word</span>   <span class="nv">NMI_Handler</span>                 <span class="o">//</span> <span class="nv">The</span> <span class="nv">NMI</span> <span class="nv">handler</span>
+    <span class="nf">.word</span>   <span class="nv">HardFault_Handler</span>           <span class="o">//</span> <span class="nv">The</span> <span class="nv">hard</span> <span class="nv">fault</span> <span class="nv">handler</span>
+    <span class="nf">.word</span>   <span class="nv">Default_Handler</span>             <span class="o">//</span> <span class="nv">The</span> <span class="nv">MPU</span> <span class="nv">fault</span> <span class="nv">handler</span>
+    <span class="nf">.word</span>   <span class="nv">Default_Handler</span>             <span class="o">//</span> <span class="nv">The</span> <span class="nv">bus</span> <span class="nv">fault</span> <span class="nv">handler</span>
+    <span class="nf">.word</span>   <span class="nv">Default_Handler</span>             <span class="o">//</span> <span class="nv">The</span> <span class="nv">usage</span> <span class="nv">fault</span> <span class="nv">handler</span>
+    <span class="nf">.word</span>   <span class="mi">0</span>                           <span class="o">//</span> <span class="nv">Reserved</span>
+    <span class="nf">.word</span>   <span class="mi">0</span>                           <span class="o">//</span> <span class="nv">Reserved</span>
+    <span class="nf">.word</span>   <span class="mi">0</span>                           <span class="o">//</span> <span class="nv">Reserved</span>
+    <span class="nf">.word</span>   <span class="mi">0</span>                           <span class="o">//</span> <span class="nv">Reserved</span>
+    <span class="nf">.word</span>   <span class="nv">Default_Handler</span>             <span class="o">//</span> <span class="nv">SVCall</span> <span class="nv">handler</span>
+    <span class="nf">.word</span>   <span class="nv">Default_Handler</span>             <span class="o">//</span> <span class="nv">Debug</span> <span class="nv">monitor</span> <span class="nv">handler</span>
+    <span class="nf">.word</span>   <span class="mi">0</span>                           <span class="o">//</span> <span class="nv">Reserved</span>
+    <span class="nf">.word</span>   <span class="nv">Default_Handler</span>             <span class="o">//</span> <span class="nv">The</span> <span class="nv">PendSV</span> <span class="nv">handler</span>
+    <span class="nf">.extern</span> <span class="nv">SysTick_Handler</span>
+    <span class="nf">.word</span>   <span class="nv">SysTick_Handler</span>             <span class="o">//</span> <span class="nv">The</span> <span class="nv">SysTick</span> <span class="nv">handler</span>
+</pre></div>
+
+<p>Note:</p>
+
+<ul>
+<li>Stack pointer we set is 0x20008000, that is because SIM3U167 internal SRAM size is 32KB (0x20000000-0x20007FFF). </li>
+<li>Reset handler address we minus 0x20000000, that is because, Arm will check the value in second word and jump to address in it. Since all Bootloader code was locate at SRAM (0x20000000), but at the time power up, all the codes are in internal flash, and didn’t copy to SRAM yet. So we have to set ResetISR address point to flash in order Arm can execute code correctly.</li>
+<li>Other exception handlers. We need to keep some import exception handlers; we will see HardFault_Handler happens many times during the Bootloader development in case the address not matches.</li>
+</ul><h3>
+<a name="216-resetisr-implements" class="anchor" href="#216-resetisr-implements"><span class="octicon octicon-link"></span></a>2.1.6 ResetISR implements.</h3>
+
+<p>We need to handle code that Arm will first execute, ResetISR.  What does this function do?</p>
+
+<ul>
+<li>Copy code to SRAM and initialize variables.</li>
+<li>Initialize system hardware</li>
+<li>Check external pin status to run under Bootloader or user application mode.</li>
+</ul><p>Here is the cod structure of ResetISR</p>
+
+<div class="highlight highlight-asm"><pre>    <span class="nf">.globl</span>  <span class="nv">ResetISR</span>
+    <span class="nf">.thumb_func</span>
+<span class="nl">ResetISR:</span>
+    <span class="err">//</span> <span class="nf">Copy</span> <span class="nv">code</span> <span class="nv">from</span> <span class="nv">flash</span> <span class="nv">to</span> <span class="nv">SRAM</span>
+    <span class="nf">bl</span>      <span class="nv">CopyCode2SRAM</span>
+    <span class="nf">.extern</span> <span class="nv">SystemInit</span>
+    <span class="nf">bl</span> <span class="nv">SystemInit</span>
+    <span class="err">//</span> <span class="nf">Check</span> <span class="nv">if</span> <span class="nv">update</span> <span class="nv">is</span> <span class="nv">needed</span>
+    <span class="nf">.extern</span> <span class="nb">ch</span><span class="nv">eck_update_requirement</span>
+    <span class="nf">bl</span>      <span class="nb">ch</span><span class="nv">eck_update_requirement</span>
+    <span class="nf">cbz</span>     <span class="nv">r0</span><span class="p">,</span> <span class="nv">RunUserCode</span>
+
+    <span class="nf">.extern</span> <span class="nv">main</span>
+    <span class="nf">bl</span> <span class="nv">main</span>
+</pre></div>
+
+<h3>
+<a name="2161-copy-code-to-sram-and-initialize-variables" class="anchor" href="#2161-copy-code-to-sram-and-initialize-variables"><span class="octicon octicon-link"></span></a>2.1.6.1 Copy code to SRAM and initialize variables.</h3>
+
+<p>Let us take a look on CopyCode2SRAM function.</p>
+
+<div class="highlight highlight-asm"><pre>    <span class="nf">.text</span>
+    <span class="nf">.thumb_func</span>
+<span class="nl">CopyCode2SRAM:</span>
+    <span class="err">//</span> <span class="nf">Copy</span> <span class="nv">the</span> <span class="nv">text</span> <span class="nv">and</span> <span class="nv">data</span> <span class="nv">sections</span> <span class="nv">from</span> <span class="nv">flash</span> <span class="nv">to</span> <span class="nv">SRAM.</span>
+    <span class="nf">movs</span>    <span class="nv">r0</span><span class="p">,</span> <span class="err">#</span><span class="mh">0x00000000</span>
+    <span class="nf">ldr</span>     <span class="nv">r1</span><span class="p">,</span> <span class="err">=</span><span class="mh">0x20000000</span>
+    <span class="nf">.extern</span> <span class="nv">_bss</span>
+    <span class="nf">ldr</span>     <span class="nv">r2</span><span class="p">,</span> <span class="err">=</span><span class="nv">_bss</span>
+<span class="nl">copy_loop:</span>
+    <span class="nf">ldr</span>     <span class="nv">r3</span><span class="p">,</span> <span class="p">[</span><span class="nv">r0</span><span class="p">],</span> <span class="err">#</span><span class="mi">4</span>
+    <span class="nf">str</span>     <span class="nv">r3</span><span class="p">,</span> <span class="p">[</span><span class="nv">r1</span><span class="p">],</span> <span class="err">#</span><span class="mi">4</span>
+    <span class="nf">cmp</span>     <span class="nv">r1</span><span class="p">,</span> <span class="nv">r2</span>
+    <span class="nf">blt</span>     <span class="nv">copy_loop</span>
+
+    <span class="err">//</span> <span class="nf">Zero</span> <span class="nv">fill</span> <span class="nv">the</span> <span class="nv">bss</span> <span class="ow">seg</span><span class="nv">ment</span>
+    <span class="nf">movs</span>    <span class="nv">r0</span><span class="p">,</span> <span class="err">#</span><span class="mh">0x00000000</span>
+    <span class="nf">.extern</span> <span class="nv">_ebss</span>
+    <span class="nf">ldr</span>     <span class="nv">r2</span><span class="p">,</span> <span class="err">=</span><span class="nv">_ebss</span>
+<span class="nl">zero_loop:</span>
+    <span class="nf">str</span>     <span class="nv">r0</span><span class="p">,</span> <span class="p">[</span><span class="nv">r1</span><span class="p">],</span> <span class="err">#</span><span class="mi">4</span>
+    <span class="nf">cmp</span>     <span class="nv">r1</span><span class="p">,</span> <span class="nv">r2</span>
+    <span class="nf">blt</span>     <span class="nv">zero_loop</span>
+
+    <span class="err">//</span> <span class="nf">Set</span> <span class="nv">the</span> <span class="nv">vector</span> <span class="nv">table</span> <span class="nv">pointer</span> <span class="nv">to</span> <span class="nv">SRAM.</span>
+    <span class="nf">ldr</span>     <span class="nv">r0</span><span class="p">,</span> <span class="err">=</span><span class="mh">0xe000ed08</span>
+    <span class="nf">ldr</span>     <span class="nv">r1</span><span class="p">,</span> <span class="err">=</span><span class="mh">0x20000000</span>
+    <span class="nf">str</span>     <span class="nv">r1</span><span class="p">,</span> <span class="p">[</span><span class="nv">r0</span><span class="p">]</span>
+    <span class="err">//</span> <span class="nf">set</span> <span class="nv">return</span> <span class="nv">address</span> <span class="nv">to</span> <span class="nv">SRAM</span> <span class="nv">and</span> <span class="nv">return</span>
+    <span class="nf">orr</span>     <span class="nv">lr</span><span class="p">,</span> <span class="nv">lr</span><span class="p">,</span> <span class="err">#</span><span class="mh">0x20000000</span>
+    <span class="nf">bx</span>      <span class="nv">lr</span>
+</pre></div>
+
+<p>The code is very simple.</p>
+
+<ul>
+<li>Copy <code>.text</code> and <code>.data</code> from flash to SRAM</li>
+<li>Zero <code>.bss</code> segment in SRAM</li>
+<li>Relocate vector table address and return to SRAM to execute.</li>
+</ul><p>Note:</p>
+
+<ul>
+<li>
+<code>_bss</code> is defined in link file, which is address after .text and .data. So the copy_loop is copy code from flash to SRAM until it reaches _bss address. </li>
+<li>
+<code>_ess</code> is defined in linke file, which is address after .bss segment. So zero_lopp, just write “0” into SRAM follow the .text and .data segment, until it reaches _ebss address.</li>
+<li>And finally, we write new vector table address (0x20000000) into register <code>0xe00ed08</code>, and set return address to SRAM and return.</li>
+</ul><h3>
+<a name="2162-initialize-system-hardware" class="anchor" href="#2162-initialize-system-hardware"><span class="octicon octicon-link"></span></a>2.1.6.2 Initialize system hardware</h3>
+
+<p>The idea is very simple too, set necessary hardware environment we need in startup file. For instance, we need to check GPIO status to choose running mode. We have to enable clock to GPIO and set the GPIO as input mode and something like that. I paste the example of SystemInit.</p>
+
+<div class="highlight highlight-c"><pre><span class="kt">void</span> <span class="nf">mySystemInit</span><span class="p">(</span><span class="kt">void</span><span class="p">)</span>
+<span class="p">{</span>
+   <span class="n">SI32_WDTIMER_A_stop_counter</span> <span class="p">(</span><span class="n">SI32_WDTIMER_0</span><span class="p">);</span>
+   <span class="c1">// Enable the APB clock to the PB registers</span>
+   <span class="n">SI32_CLKCTRL_A_enable_apb_to_modules_0</span><span class="p">(</span><span class="n">SI32_CLKCTRL_0</span><span class="p">,</span> <span class="n">SI32_CLKCTRL_A_APBCLKG0_PB0</span><span class="p">);</span>
+   <span class="n">SI32_PBSTD_A_set_pins_push_pull_output</span><span class="p">(</span><span class="n">SI32_PBSTD_1</span><span class="p">,</span> <span class="mh">0x00000008</span><span class="p">);</span>
+
+   <span class="n">SI32_PBCFG_A_enable_crossbar_1</span><span class="p">(</span><span class="n">SI32_PBCFG_0</span><span class="p">);</span>
+   <span class="n">SI32_PBSTD_A_set_pins_digital_input</span><span class="p">(</span><span class="n">SI32_PBSTD_2</span><span class="p">,</span><span class="mh">0x00000300</span><span class="p">);</span>
+   <span class="c1">// Enable the LED drivers (P2.10, P2.11)</span>
+   <span class="n">SI32_PBSTD_A_set_pins_push_pull_output</span><span class="p">(</span><span class="n">SI32_PBSTD_2</span><span class="p">,</span> <span class="mh">0x00000C00</span><span class="p">);</span>
+   <span class="n">SysTick_Config</span><span class="p">(</span><span class="n">SystemCoreClock</span> <span class="o">/</span> <span class="mi">1000</span><span class="p">);</span>
+   <span class="c1">// set Priority for Cortex-M0 System Interrupts.</span>
+   <span class="n">NVIC_SetPriority</span><span class="p">(</span><span class="n">SysTick_IRQn</span><span class="p">,</span> <span class="p">(</span><span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="n">__NVIC_PRIO_BITS</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span><span class="p">);</span>
+<span class="p">}</span>
+</pre></div>
+
+<h3>
+<a name="2163-check-external-pin-status-to-run-bootloader-or-user-application" class="anchor" href="#2163-check-external-pin-status-to-run-bootloader-or-user-application"><span class="octicon octicon-link"></span></a>2.1.6.3 Check external pin status to run Bootloader or user application</h3>
+
+<p>The code call check_update_requirement to check GPIO status, if the GPIO is high, we enter into user application mode; if the GPIO is low, we enter into Bootloader mode. Let’s check user application mode entry code.</p>
+
+<div class="highlight highlight-asm"><pre>    <span class="nf">.thumb_func</span>
+<span class="nl">RunUserCode:</span>
+    <span class="err">//</span> <span class="nf">Set</span> <span class="nv">the</span> <span class="nv">vector</span> <span class="nv">table</span> <span class="nv">address</span> <span class="nv">to</span> <span class="nv">user</span> <span class="nv">code</span> <span class="nv">address.</span>
+    <span class="nf">ldr</span>     <span class="nv">r0</span><span class="p">,</span> <span class="err">=</span><span class="nv">USER_CODE_ADDRESS</span>
+    <span class="nf">ldr</span>     <span class="nv">r1</span><span class="p">,</span> <span class="err">=</span><span class="mh">0xe000ed08</span>
+    <span class="nf">str</span>     <span class="nv">r0</span><span class="p">,</span> <span class="p">[</span><span class="nv">r1</span><span class="p">]</span>
+
+    <span class="err">//</span> <span class="nf">Update</span> <span class="nv">stack</span> <span class="nv">pointer</span> <span class="nv">from</span> <span class="nv">user</span> <span class="nv">code</span> <span class="nv">vector</span> <span class="nv">table</span>
+    <span class="nf">ldr</span>     <span class="nv">r1</span><span class="p">,</span> <span class="p">[</span><span class="nv">r0</span><span class="p">]</span>
+    <span class="nf">mov</span>     <span class="nb">sp</span><span class="p">,</span> <span class="nv">r1</span>
+
+    <span class="err">//</span> <span class="nf">Load</span> <span class="nv">user</span> <span class="nv">code</span> <span class="nv">reset</span> <span class="nv">handler</span> <span class="nv">and</span> <span class="nv">jump</span> <span class="nv">to</span> <span class="nv">the</span> <span class="nv">user</span> <span class="nv">code</span>
+    <span class="nf">ldr</span>     <span class="nv">r0</span><span class="p">,</span> <span class="p">[</span><span class="nv">r0</span><span class="p">,</span> <span class="err">#</span><span class="mi">4</span><span class="p">]</span>
+    <span class="nf">bx</span>      <span class="nv">r0</span>
+</pre></div>
+
+<p>Yeah, we have to relocate vector table if we want run user application. Note we have a macro <code>USER_CODE_ADDRESS</code> which is user application start address. At the end we load user code reset handler and jump to the user code.</p>
+
+<p>OK, we will talk about Bootloader mode in next couple sections.</p>
+
+<h3>
+<a name="22-bootloader-communicate-with-pc-host-tool-via-uart" class="anchor" href="#22-bootloader-communicate-with-pc-host-tool-via-uart"><span class="octicon octicon-link"></span></a>2.2 Bootloader communicate with PC host tool via UART.</h3>
+
+<p>We choose UART interface as communication port with PC host since it is easier to implement. Just have a look on SIM3U167 reference manual, initialize UART peripherals, and set it as 115200 baud rate. Prepare UART send and received functions.  </p>
+
+<ul>
+<li>UART hardware peripherals initialization. Those codes can be generated by Silabs AppBuilder.</li>
+</ul><div class="highlight highlight-c"><pre><span class="n">Void</span> <span class="nf">UART0_initialize</span><span class="p">(</span><span class="kt">void</span><span class="p">)</span>
+<span class="p">{</span>
+   <span class="n">SI32_PBCFG_A_enable_crossbar_0</span><span class="p">(</span><span class="n">SI32_PBCFG_0</span><span class="p">);</span>
+   <span class="c1">// UART PINS TO PROPER CONFIG (TX = PB1.12, RX = PB1.13)</span>
+   <span class="n">SI32_PBSTD_A_set_pins_push_pull_output</span><span class="p">(</span><span class="n">SI32_PBSTD_1</span><span class="p">,</span> <span class="mh">0x0001000</span><span class="p">);</span>
+   <span class="n">SI32_PBSTD_A_set_pins_digital_input</span><span class="p">(</span><span class="n">SI32_PBSTD_1</span><span class="p">,</span> <span class="mh">0x00002000</span><span class="p">);</span>
+   <span class="n">SI32_PBSTD_A_write_pbskipen</span><span class="p">(</span><span class="n">SI32_PBSTD_0</span><span class="p">,</span> <span class="mh">0x0000FFFF</span><span class="p">);</span>
+   <span class="n">SI32_PBSTD_A_write_pbskipen</span><span class="p">(</span><span class="n">SI32_PBSTD_1</span><span class="p">,</span> <span class="mh">0x00000FFF</span><span class="p">);</span>
+   <span class="c1">// BRING OUT UART</span>
+   <span class="n">SI32_PBCFG_A_enable_xbar0h_peripherals</span><span class="p">(</span><span class="n">SI32_PBCFG_0</span><span class="p">,</span> <span class="n">SI32_PBCFG_A_XBAR0H_UART0EN</span><span class="p">);</span>
+
+   <span class="c1">// ENABLE UART0 CLOCK</span>
+   <span class="n">SI32_CLKCTRL_A_enable_apb_to_modules_0</span><span class="p">(</span><span class="n">SI32_CLKCTRL_0</span><span class="p">,</span>
+                                          <span class="n">SI32_CLKCTRL_A_APBCLKG0_UART0</span><span class="p">);</span>
+
+   <span class="c1">// SETUP UART. BAUD RATE (9600 baud, APB = System Clock)</span>
+   <span class="n">SI32_UART_A_enter_full_duplex_mode</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">);</span>
+   <span class="n">SI32_UART_A_set_tx_baudrate</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">,</span> <span class="p">(</span><span class="n">SystemCoreClock</span> <span class="o">/</span> <span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">UART_BAUD_RATE</span><span class="p">))</span> <span class="err">–</span> <span class="mi">1</span><span class="p">);</span>
+   <span class="n">SI32_UART_A_set_rx_baudrate</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">,</span> <span class="p">(</span><span class="n">SystemCoreClock</span> <span class="o">/</span> <span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">UART_BAUD_RATE</span><span class="p">))</span> <span class="err">–</span> <span class="mi">1</span><span class="p">);</span>
+   <span class="c1">// SETUP TX (8-bit, 1stop, no-parity)</span>
+   <span class="n">SI32_UART_A_select_tx_data_length</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">,</span> <span class="mi">8</span><span class="p">);</span>
+   <span class="n">SI32_UART_A_enable_tx_start_bit</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">);</span>
+   <span class="n">SI32_UART_A_enable_tx_stop_bit</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">);</span>
+   <span class="n">SI32_UART_A_disable_tx_parity_bit</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">);</span>
+   <span class="n">SI32_UART_A_select_tx_stop_bits</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">,</span> <span class="n">SI32_UART_A_STOP_BITS_1_BIT</span><span class="p">);</span>
+   <span class="n">SI32_UART_A_disable_tx_signal_inversion</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">);</span>
+   <span class="n">SI32_UART_A_enable_tx</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">);</span>
+   <span class="c1">// SETUP RX</span>
+   <span class="n">SI32_UART_A_select_rx_data_length</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">,</span> <span class="mi">8</span><span class="p">);</span>
+   <span class="n">SI32_UART_A_enable_rx_start_bit</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">);</span>
+   <span class="n">SI32_UART_A_enable_rx_stop_bit</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">);</span>
+   <span class="n">SI32_UART_A_select_rx_stop_bits</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">,</span> <span class="n">SI32_UART_A_STOP_BITS_1_BIT</span><span class="p">);</span>
+   <span class="n">SI32_UART_A_disable_rx_signal_inversion</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">);</span>
+   <span class="n">SI32_UART_A_select_rx_fifo_threshold_1</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">);</span>
+   <span class="n">SI32_UART_A_enable_rx</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">);</span>
+<span class="p">}</span>
+</pre></div>
+
+<ul>
+<li>UART send and receive functions.</li>
+</ul><div class="highlight highlight-c"><pre><span class="n">Void</span> <span class="nf">uart_send_data</span><span class="p">(</span><span class="kt">unsigned</span> <span class="kt">char</span> <span class="o">*</span><span class="n">data</span><span class="p">,</span> <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">count</span><span class="p">)</span>
+<span class="p">{</span>
+   <span class="k">while</span><span class="p">(</span><span class="n">count</span><span class="o">--</span><span class="p">)</span>
+   <span class="p">{</span>
+      <span class="c1">// Block if the output buffer is full</span>
+      <span class="k">while</span> <span class="p">(</span><span class="n">SI32_UART_A_read_tx_fifo_count</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="mi">4</span><span class="p">);</span>
+      <span class="c1">// Write character to the output buffer</span>
+      <span class="n">SI32_UART_A_write_data_u8</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">,</span> <span class="o">*</span><span class="n">data</span><span class="o">++</span><span class="p">);</span>
+   <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="kt">int</span> <span class="nf">uart_get_data</span><span class="p">(</span><span class="kt">unsigned</span> <span class="kt">char</span> <span class="o">*</span><span class="n">data</span><span class="p">,</span> <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">count</span><span class="p">)</span>
+<span class="p">{</span>
+   <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">time_out</span><span class="p">;</span>
+   <span class="k">while</span><span class="p">(</span><span class="n">count</span><span class="o">--</span><span class="p">)</span>
+   <span class="p">{</span>
+      <span class="n">time_out</span> <span class="o">=</span> <span class="n">msTicks</span> <span class="o">+</span> <span class="n">UART_TIME_OUT</span><span class="p">;</span>
+      <span class="k">while</span><span class="p">(</span><span class="n">SI32_UART_A_read_rx_fifo_count</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span>
+      <span class="p">{</span>
+         <span class="k">if</span><span class="p">(</span><span class="n">time_out</span> <span class="o">&lt;</span> <span class="n">msTicks</span><span class="p">)</span>
+         <span class="p">{</span>
+            <span class="k">return</span> <span class="o">-</span><span class="mi">1</span><span class="p">;</span>
+         <span class="p">}</span>
+      <span class="p">}</span>
+      <span class="o">*</span><span class="n">data</span><span class="o">++</span> <span class="o">=</span> <span class="n">SI32_UART_A_read_data_u8</span><span class="p">(</span><span class="n">SI32_UART_0</span><span class="p">);</span>
+   <span class="p">}</span>
+   <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+
+<h3>
+<a name="23-bootloader-receive-firmware-from-pc-and-burn-it-into-flash" class="anchor" href="#23-bootloader-receive-firmware-from-pc-and-burn-it-into-flash"><span class="octicon octicon-link"></span></a>2.3 Bootloader receive firmware from PC and burn it into flash.</h3>
+
+<p>The UART driver was ready. We need to write user application into flash and flash device driver is needed now.</p>
+
+<ul>
+<li>Flash hardware peripherals initialization.</li>
+</ul><div class="highlight highlight-c"><pre><span class="n">Void</span> <span class="nf">flash_initialize</span><span class="p">(</span><span class="kt">void</span><span class="p">)</span>
+<span class="p">{</span>
+   <span class="c1">// ENABLE FLASH CLOCK</span>
+   <span class="n">SI32_CLKCTRL_A_enable_apb_to_modules_0</span><span class="p">(</span><span class="n">SI32_CLKCTRL_0</span><span class="p">,</span>
+                                          <span class="n">SI32_CLKCTRL_A_APBCLKG0_FLCTRLCEN_ENABLED_U32</span><span class="p">);</span>
+   <span class="c1">// 1. Enable VDD Supply Monitor and set as a reset source</span>
+   <span class="n">SI32_VMON_A_enable_vdd_supply_monitor</span><span class="p">(</span><span class="n">SI32_VMON_0</span><span class="p">);</span>
+   <span class="n">SI32_RSTSRC_A_enable_vdd_monitor_reset_source</span><span class="p">(</span><span class="n">SI32_RSTSRC_0</span><span class="p">);</span>
+<span class="p">}</span>
+</pre></div>
+
+<ul>
+<li>Flash operation functions</li>
+</ul><div class="highlight highlight-c"><pre><span class="kt">void</span> <span class="nf">flash_erase_page</span><span class="p">(</span><span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">addr</span><span class="p">)</span>
+<span class="p">{</span>
+   <span class="n">SI32_FLASHCTRL_A_exit_multi_byte_write_mode</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">);</span>
+   <span class="n">SI32_FLASHCTRL_A_write_wraddr</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">,</span> <span class="n">addr</span><span class="p">);</span>
+   <span class="n">SI32_FLASHCTRL_A_enter_flash_erase_mode</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">);</span>
+   <span class="n">SI32_FLASHCTRL_A_write_flash_key</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">,</span> <span class="mh">0xA5</span><span class="p">);</span>
+   <span class="n">SI32_FLASHCTRL_A_write_flash_key</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">,</span> <span class="mh">0xF1</span><span class="p">);</span>
+   <span class="n">SI32_FLASHCTRL_A_write_wrdata</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">,</span> <span class="mh">0x0000</span><span class="p">);</span>
+   <span class="k">while</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_A_is_buffer_full</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">));</span>
+<span class="p">}</span>
+
+<span class="kt">int</span> <span class="nf">flash_write_data</span><span class="p">(</span><span class="kt">unsigned</span> <span class="kt">char</span> <span class="o">*</span> <span class="n">c</span><span class="p">,</span><span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">addr</span><span class="p">,</span> <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">num</span><span class="p">)</span>
+<span class="p">{</span>
+   <span class="kt">int</span> <span class="n">i</span><span class="p">;</span>
+   <span class="kt">unsigned</span> <span class="kt">short</span> <span class="o">*</span><span class="n">buf</span> <span class="o">=</span> <span class="p">(</span><span class="kt">unsigned</span> <span class="kt">short</span><span class="o">*</span><span class="p">)</span><span class="n">c</span><span class="p">;</span>
+   <span class="n">SI32_FLASHCTRL_A_exit_flash_erase_mode</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">);</span>
+   <span class="n">SI32_FLASHCTRL_A_write_wraddr</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">,</span> <span class="n">addr</span><span class="p">);</span>
+   <span class="n">SI32_FLASHCTRL_A_enter_multi_byte_write_mode</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">);</span>
+   <span class="n">SI32_FLASHCTRL_A_write_flash_key</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">,</span> <span class="mh">0xA5</span><span class="p">);</span>
+   <span class="n">SI32_FLASHCTRL_A_write_flash_key</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">,</span> <span class="mh">0xF2</span><span class="p">);</span>
+   <span class="c1">// Write all the half-words in the array</span>
+   <span class="k">for</span><span class="p">(</span><span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">num</span> <span class="o">/</span> <span class="mi">2</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span>
+   <span class="p">{</span>
+      <span class="n">SI32_FLASHCTRL_A_write_wrdata</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">,</span> <span class="n">buf</span><span class="p">[</span><span class="n">i</span><span class="p">]);</span>
+      <span class="k">while</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_A_is_flash_busy</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">));</span>
+   <span class="p">}</span>
+   <span class="k">while</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_A_is_buffer_full</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">));</span>
+   <span class="n">SI32_FLASHCTRL_A_write_flash_key</span><span class="p">(</span><span class="n">SI32_FLASHCTRL_0</span><span class="p">,</span> <span class="mh">0x5A</span><span class="p">);</span>
+   <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+
+<h2>
+<a name="3-bootloader-uart-communication-protocol" class="anchor" href="#3-bootloader-uart-communication-protocol"><span class="octicon octicon-link"></span></a>3 Bootloader UART communication protocol</h2>
+
+<h3>
+<a name="31-protocol-definition" class="anchor" href="#31-protocol-definition"><span class="octicon octicon-link"></span></a>3.1 Protocol definition</h3>
+
+<p>We can define our own protocol as we like. Also choose exist one is suitable. We list a protocol below just for reference. From view of host side.</p>
+
+<ul>
+<li>Command package</li>
+</ul><pre><code>| CMD |
+| CMD ^ 0xFF |
+| Wait for ACK |
+</code></pre>
+
+<ul>
+<li>Address package</li>
+</ul><pre><code>| ADDR3 |
+| ADDR2 |
+| ADDR1 |
+| ADDR0 |
+| CRC(=ADDR3^ADDR2^ADDR1^ADDR0) |
+</code></pre>
+
+<ul>
+<li>Write flash command</li>
+</ul><pre><code>| CMD(0x31) |
+| ADDR(address) |
+| Wait for ACK |
+| (LEN-1) &amp; 0XFF |
+| DATA0 |
+| … |
+| DATA(LEN-1) |
+| CRC(=DATA0^DATA1…^DATA(LEN-1)) |
+| Wait for ACK |
+</code></pre>
+
+<ul>
+<li>Read flash command</li>
+</ul><pre><code>| CMD(0x11) |
+| ADDR(address) |
+| Wait for ACK |
+| (LEN-1) &amp; 0XFF |
+| CRC (((LEN-1) &amp; 0XFF) ^ 0xFF) |
+| Wait for ACK |
+| DATA0 |
+| … |
+| DATA(LEN-1) |
+</code></pre>
+
+<ul>
+<li>Erase flash command</li>
+</ul><pre><code>| CMD(0x43) |
+| LEN-1 |
+| SEC0 |
+| … |
+| SEC(LEN-1) |
+| CRC(SEC0^SEC1…^SEC(LEN-1)) |
+| Wait for ACK |
+</code></pre>
+
+<p>The device side control logic was list below.</p>
+
+<div class="highlight highlight-c"><pre><span class="n">While</span> <span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+<span class="p">{</span>
+   <span class="n">SI32_PBSTD_A_toggle_pins</span><span class="p">(</span><span class="n">SI32_PBSTD_2</span><span class="p">,</span> <span class="mh">0xC00</span><span class="p">);</span>
+   <span class="c1">// received CMD from host</span>
+   <span class="k">if</span> <span class="p">(</span><span class="n">bl_get_cmd</span><span class="p">()</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span>
+   <span class="p">{</span>
+      <span class="k">switch</span> <span class="p">(</span><span class="n">data_buf</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+      <span class="p">{</span>
+         <span class="k">case</span> <span class="nl">CMD_WRITE_FLASH</span><span class="p">:</span>
+            <span class="n">bl_write_flash</span><span class="p">();</span>
+            <span class="k">break</span><span class="p">;</span>
+         <span class="k">case</span> <span class="nl">CMD_READ_FLASH</span><span class="p">:</span>
+            <span class="n">bl_read_flash</span><span class="p">();</span>
+            <span class="k">break</span><span class="p">;</span>
+         <span class="k">case</span> <span class="nl">CMD_ERASE_FLASH</span><span class="p">:</span>
+            <span class="n">bl_erase_flash</span><span class="p">();</span>
+            <span class="k">break</span><span class="p">;</span>
+         <span class="k">default</span><span class="o">:</span>
+            <span class="k">break</span><span class="p">;</span>
+      <span class="p">}</span>
+   <span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+
+<h3>
+<a name="32-the-protocol-functions-list-below" class="anchor" href="#32-the-protocol-functions-list-below"><span class="octicon octicon-link"></span></a>3.2 The protocol functions list below:</h3>
+
+<div class="highlight highlight-c"><pre><span class="cp">#define FLASH_SECTOR_SIZE 0x400</span>
+
+<span class="cp">#define CMD_WRITE_FLASH     0x31</span>
+<span class="cp">#define CMD_READ_FLASH     0x11</span>
+<span class="cp">#define CMD_ERASE_FLASH     0x43</span>
+<span class="cp">#define CMD_UNKNOW         0xFF</span>
+
+<span class="cp">#define RES_ACK            0x79</span>
+<span class="cp">#define RES_NACK           0x1F</span>
+<span class="cp">#define RES_UNKNOW         0xEE</span>
+<span class="kt">void</span> <span class="nf">bl_send_ack</span><span class="p">(</span><span class="kt">unsigned</span> <span class="kt">char</span> <span class="n">ack</span><span class="p">)</span>
+<span class="p">{</span>
+   <span class="kt">unsigned</span> <span class="kt">char</span> <span class="n">res</span> <span class="o">=</span> <span class="n">ack</span><span class="p">;</span>
+   <span class="n">uart_send_data</span><span class="p">(</span><span class="o">&amp;</span><span class="n">res</span><span class="p">,</span> <span class="mi">1</span><span class="p">);</span>
+<span class="p">}</span>
+</pre></div>
+
+<ul>
+<li>Get command from host</li>
+</ul><div class="highlight highlight-c"><pre><span class="kt">int</span> <span class="nf">bl_get_cmd</span><span class="p">(</span><span class="kt">void</span><span class="p">)</span>
+<span class="p">{</span>
+   <span class="kt">unsigned</span> <span class="kt">char</span> <span class="o">*</span><span class="n">ptr</span> <span class="o">=</span> <span class="n">data_buf</span><span class="p">;</span>
+   <span class="k">if</span> <span class="p">(</span><span class="n">uart_get_data</span><span class="p">(</span><span class="n">ptr</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span>
+   <span class="p">{</span>
+      <span class="k">if</span> <span class="p">(</span><span class="n">ptr</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">!=</span> <span class="p">(</span><span class="n">ptr</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">^</span> <span class="mh">0xFF</span><span class="p">))</span>
+      <span class="p">{</span>
+         <span class="n">bl_send_ack</span><span class="p">(</span><span class="n">RES_NACK</span><span class="p">);</span>
+         <span class="k">return</span> <span class="o">-</span><span class="mi">2</span><span class="p">;</span>
+      <span class="p">}</span>
+      <span class="k">else</span>
+      <span class="p">{</span>
+         <span class="n">bl_send_ack</span><span class="p">(</span><span class="n">RES_ACK</span><span class="p">);</span>
+         <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+      <span class="p">}</span>
+   <span class="p">}</span>
+   <span class="k">return</span> <span class="o">-</span><span class="mi">1</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+
+<ul>
+<li>Handle write flash command</li>
+</ul><div class="highlight highlight-c"><pre><span class="kt">void</span> <span class="nf">bl_write_flash</span><span class="p">()</span>
+<span class="p">{</span>
+   <span class="kt">int</span> <span class="n">i</span><span class="p">;</span>
+   <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">addr</span><span class="p">,</span> <span class="n">len</span><span class="p">;</span>
+   <span class="kt">unsigned</span> <span class="kt">char</span> <span class="n">crc</span><span class="p">;</span>
+   <span class="kt">unsigned</span> <span class="kt">char</span> <span class="o">*</span><span class="n">ptr</span> <span class="o">=</span> <span class="n">data_buf</span><span class="p">;</span>
+   <span class="c1">// get address</span>
+   <span class="k">if</span> <span class="p">(</span><span class="n">uart_get_data</span><span class="p">(</span><span class="n">ptr</span><span class="p">,</span> <span class="mi">5</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span>
+   <span class="p">{</span>
+      <span class="n">crc</span> <span class="o">=</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">^</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">^</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="o">^</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">3</span><span class="p">];</span>
+      <span class="k">if</span> <span class="p">(</span><span class="n">crc</span> <span class="o">==</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">4</span><span class="p">])</span>
+      <span class="p">{</span>
+         <span class="n">addr</span> <span class="o">=</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">3</span><span class="p">]</span> <span class="o">|</span> <span class="p">(</span><span class="n">ptr</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="o">&lt;&lt;</span> <span class="mi">8</span><span class="p">)</span> <span class="o">|</span> <span class="p">(</span><span class="n">ptr</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">&lt;&lt;</span> <span class="mi">16</span><span class="p">)</span> <span class="o">|</span> <span class="p">(</span><span class="n">ptr</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">&lt;&lt;</span> <span class="mi">24</span><span class="p">);</span>
+      <span class="p">}</span>
+   <span class="p">}</span>
+   <span class="c1">// send ack</span>
+   <span class="n">bl_send_ack</span><span class="p">(</span><span class="n">RES_ACK</span><span class="p">);</span>
+   <span class="c1">// get data len</span>
+   <span class="n">uart_get_data</span><span class="p">(</span><span class="n">ptr</span><span class="p">,</span> <span class="mi">1</span><span class="p">);</span>
+   <span class="n">len</span> <span class="o">=</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+   <span class="c1">// get data and crc</span>
+   <span class="k">if</span> <span class="p">(</span><span class="n">uart_get_data</span><span class="p">(</span><span class="n">ptr</span><span class="p">,</span> <span class="n">len</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span>
+   <span class="p">{</span>
+      <span class="n">crc</span> <span class="o">=</span> <span class="mh">0xFF</span><span class="p">;</span>
+      <span class="k">for</span> <span class="p">(</span><span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">len</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span>
+      <span class="p">{</span>
+         <span class="n">crc</span> <span class="o">=</span> <span class="n">crc</span> <span class="o">^</span> <span class="n">ptr</span><span class="p">[</span><span class="n">i</span><span class="p">];</span>
+      <span class="p">}</span>
+   <span class="p">}</span>
+   <span class="c1">//write flash</span>
+   <span class="k">if</span> <span class="p">(</span><span class="n">crc</span> <span class="o">==</span> <span class="n">ptr</span><span class="p">[</span><span class="n">len</span><span class="p">])</span>
+   <span class="p">{</span>
+      <span class="k">if</span> <span class="p">((</span><span class="n">addr</span> <span class="o">&gt;=</span> <span class="n">USER_CODE_ADDRESS</span><span class="p">)</span> <span class="o">&amp;&amp;</span> <span class="n">addr</span> <span class="o">&lt;</span> <span class="n">TOP_CODE_ADDRESS</span><span class="p">)</span>
+      <span class="p">{</span>
+         <span class="n">flash_write_data</span><span class="p">(</span><span class="n">ptr</span><span class="p">,</span> <span class="n">addr</span><span class="p">,</span> <span class="n">len</span><span class="p">);</span>
+      <span class="p">}</span>
+   <span class="p">}</span>
+   <span class="c1">// send ack</span>
+   <span class="n">bl_send_ack</span><span class="p">(</span><span class="n">RES_ACK</span><span class="p">);</span>
+<span class="p">}</span>
+</pre></div>
+
+<ul>
+<li>Handle read flash command</li>
+</ul><div class="highlight highlight-c"><pre><span class="kt">void</span> <span class="nf">bl_read_flash</span><span class="p">()</span>
+<span class="p">{</span>
+   <span class="kt">int</span> <span class="n">i</span><span class="p">;</span>
+   <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">addr</span><span class="p">,</span> <span class="n">len</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+   <span class="kt">unsigned</span> <span class="kt">char</span> <span class="n">crc</span><span class="p">;</span>
+   <span class="kt">unsigned</span> <span class="kt">char</span> <span class="o">*</span><span class="n">ptr</span> <span class="o">=</span> <span class="n">data_buf</span><span class="p">;</span>
+   <span class="c1">// get address</span>
+   <span class="k">if</span> <span class="p">(</span><span class="n">uart_get_data</span><span class="p">(</span><span class="n">ptr</span><span class="p">,</span> <span class="mi">5</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span>
+   <span class="p">{</span>
+      <span class="n">crc</span> <span class="o">=</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">^</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">^</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="o">^</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">3</span><span class="p">];</span>
+      <span class="k">if</span> <span class="p">(</span><span class="n">crc</span> <span class="o">==</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">4</span><span class="p">])</span>
+      <span class="p">{</span>
+         <span class="n">addr</span> <span class="o">=</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">3</span><span class="p">]</span> <span class="o">|</span> <span class="p">(</span><span class="n">ptr</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="o">&lt;&lt;</span> <span class="mi">8</span><span class="p">)</span> <span class="o">|</span> <span class="p">(</span><span class="n">ptr</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">&lt;&lt;</span> <span class="mi">16</span><span class="p">)</span> <span class="o">|</span> <span class="p">(</span><span class="n">ptr</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">&lt;&lt;</span> <span class="mi">24</span><span class="p">);</span>
+      <span class="p">}</span>
+   <span class="p">}</span>
+   <span class="c1">// send ack</span>
+   <span class="n">bl_send_ack</span><span class="p">(</span><span class="n">RES_ACK</span><span class="p">);</span>
+   <span class="c1">// get data len and crc</span>
+   <span class="k">if</span><span class="p">(</span><span class="n">uart_get_data</span><span class="p">(</span><span class="n">ptr</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span>
+   <span class="p">{</span>
+      <span class="k">if</span><span class="p">((</span><span class="n">ptr</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">^</span> <span class="mh">0xFF</span><span class="p">)</span> <span class="o">==</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
+      <span class="p">{</span>
+         <span class="n">len</span> <span class="o">=</span> <span class="n">ptr</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+      <span class="p">}</span>
+   <span class="p">}</span>
+   <span class="c1">// send ack</span>
+   <span class="n">bl_send_ack</span><span class="p">(</span><span class="n">RES_ACK</span><span class="p">);</span>
+   <span class="c1">// send data</span>
+   <span class="k">for</span><span class="p">(</span><span class="n">i</span> <span class="o">=</span><span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">len</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span>
+   <span class="p">{</span>
+      <span class="n">ptr</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">=</span> <span class="o">*</span><span class="p">(</span><span class="kt">unsigned</span> <span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">addr</span><span class="o">++</span><span class="p">);</span>
+   <span class="p">}</span>
+   <span class="n">uart_send_data</span><span class="p">(</span><span class="n">ptr</span><span class="p">,</span><span class="n">len</span><span class="p">);</span>
+<span class="p">}</span>
+</pre></div>
+
+<ul>
+<li>Handle erase flash command</li>
+</ul><div class="highlight highlight-c"><pre><span class="kt">void</span> <span class="nf">bl_erase_flash</span><span class="p">()</span>
+<span class="p">{</span>
+   <span class="kt">int</span> <span class="n">i</span><span class="p">;</span>
+   <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">addr</span><span class="p">,</span> <span class="n">len</span><span class="p">;</span>
+   <span class="kt">unsigned</span> <span class="kt">char</span> <span class="n">crc</span><span class="p">;</span>
+   <span class="kt">unsigned</span> <span class="kt">char</span> <span class="o">*</span><span class="n">ptr</span> <span class="o">=</span> <span class="n">data_buf</span><span class="p">;</span>
+
+   <span class="c1">// get len</span>
+   <span class="k">if</span> <span class="p">(</span><span class="n">uart_get_data</span><span class="p">(</span><span class="n">ptr</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span>
+   <span class="p">{</span>
+      <span class="n">len</span> <span class="o">=</span> <span class="p">(</span><span class="n">ptr</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xFF</span><span class="p">;</span> <span class="c1">// maximum sector number is 256</span>
+   <span class="p">}</span>
+   <span class="c1">// get sector sequence and crc</span>
+   <span class="k">if</span> <span class="p">(</span><span class="n">uart_get_data</span><span class="p">(</span><span class="n">ptr</span><span class="p">,</span> <span class="n">len</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span>
+   <span class="p">{</span>
+      <span class="n">crc</span> <span class="o">=</span> <span class="mh">0xFF</span><span class="p">;</span>
+      <span class="k">for</span> <span class="p">(</span><span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">len</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span>
+      <span class="p">{</span>
+         <span class="n">crc</span> <span class="o">=</span> <span class="n">crc</span> <span class="o">^</span> <span class="n">ptr</span><span class="p">[</span><span class="n">i</span><span class="p">];</span>
+      <span class="p">}</span>
+   <span class="p">}</span>
+   <span class="c1">// erase flash sectors</span>
+   <span class="k">if</span> <span class="p">(</span><span class="n">crc</span> <span class="o">==</span> <span class="n">ptr</span><span class="p">[</span><span class="n">len</span><span class="p">])</span>
+   <span class="p">{</span>
+      <span class="k">for</span> <span class="p">(</span><span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">len</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span>
+      <span class="p">{</span>
+         <span class="n">addr</span> <span class="o">=</span> <span class="n">ptr</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">*</span> <span class="n">FLASH_SECTOR_SIZE</span><span class="p">;</span>
+         <span class="k">if</span> <span class="p">((</span><span class="n">addr</span> <span class="o">&gt;=</span> <span class="n">USER_CODE_ADDRESS</span><span class="p">)</span> <span class="o">&amp;&amp;</span> <span class="n">addr</span> <span class="o">&lt;</span> <span class="n">TOP_CODE_ADDRESS</span><span class="p">)</span>
+         <span class="p">{</span>
+            <span class="n">flash_erase_page</span><span class="p">(</span><span class="n">addr</span><span class="p">);</span>
+         <span class="p">}</span>
+      <span class="p">}</span>
+   <span class="p">}</span>
+   <span class="c1">// send ack</span>
+   <span class="n">bl_send_ack</span><span class="p">(</span><span class="n">RES_ACK</span><span class="p">);</span>
+<span class="p">}</span>
+</pre></div>
+
+<h2>
+<a name="4-choose-python-as-host-uart-tool" class="anchor" href="#4-choose-python-as-host-uart-tool"><span class="octicon octicon-link"></span></a>4 Choose Python as host UART tool</h2>
+
+<p>It is time to pick PC host UART tool.  For easier usage purpose, we choose Python. I had tried to use Ruby serial port gem before Python. However, it is not stable. So Python become the first choice. And very lucky, I found a Python Bootloader UART source code.</p>
+
+<ul>
+<li>Install Python 2.6/2.7</li>
+</ul><p>Go to web site <a href="http://www.python.org">http://www.python.org</a> to download python and install it under windows.</p>
+
+<ul>
+<li>Download Python Serial Port Extension</li>
+</ul><p>Get it from web site <a href="http://pypi.python.org/pypi/pyserial">http://pypi.python.org/pypi/pyserial</a></p>
+
+<ul>
+<li>Install Python Serial Port Extension</li>
+</ul><p>Extract the package under Python install directory; execute command below to install the Serial Port Extension.</p>
+
+<div class="highlight highlight-python"><pre><span class="n">python</span> <span class="n">setup</span><span class="o">.</span><span class="n">py</span> <span class="n">install</span>
+</pre></div>
+
+<ul>
+<li>Get stm32loader.py and make you own modification.
+Get it from web site <a href="https://github.com/jsnyder/stm32loader">https://github.com/jsnyder/stm32loader</a>.</li>
+</ul><h2>
+<a name="5-build-bootloader-code" class="anchor" href="#5-build-bootloader-code"><span class="octicon octicon-link"></span></a>5 Build Bootloader code</h2>
+
+<p>We choose Silabs Precision32 UDP MCU Card as our hardware environment.</p>
+
+<ul>
+<li>Build Bootloader with Precision32 IDE</li>
+<li>Download Bootloader into SIM3U167 internal flash via Serial Wire. </li>
+<li>Power up MCU card and pressing SW2, it enters Bootloader mode, DS3 and DS2 are blinking</li>
+</ul><h2>
+<a name="6-develop-user-application-with-bootloader" class="anchor" href="#6-develop-user-application-with-bootloader"><span class="octicon octicon-link"></span></a>6 Develop User application with Bootloader</h2>
+
+<p>User applications runs on Flash, but start address is not 0x00000000, we have a default value 0x1000. We need to make this modification in user application’s link file.  Just change .text segment load address to 0x1000. And we also want to generate binary file in post build stage of the user application.</p>
+
+<h2>
+<a name="7-bootloader-functional-test" class="anchor" href="#7-bootloader-functional-test"><span class="octicon octicon-link"></span></a>7 Bootloader functional test</h2>
+
+<p>We were doing the test on Silabs Precision32 UDP MCU Card.</p>
+
+<ul>
+<li>Connect USB cable with J10 and PC USB port, PC will found COM4 after power on.</li>
+<li>Copy stm32loader.py to C:\Python26 (your Python install directory).</li>
+<li>Copy user code binary file to C:\Python26 directory, for blinky example code, we have a sim3u1xx_Blinky.bin.</li>
+<li>Run Python tool.</li>
+</ul><div class="highlight highlight-python"><pre><span class="n">C</span><span class="p">:</span>\<span class="n">Python26</span><span class="o">&gt;</span><span class="n">python</span> <span class="n">sim32loader</span><span class="o">.</span><span class="n">py</span>  <span class="o">-</span><span class="n">wv</span> <span class="n">sim3u1xx_Blinky</span><span class="o">.</span><span class="n">bin</span>
+<span class="n">sim3u1xx_Blinky</span><span class="o">.</span><span class="n">bin</span>
+<span class="p">[</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">6</span><span class="p">,</span> <span class="mi">7</span><span class="p">]</span>
+<span class="n">File</span> <span class="n">length</span> <span class="mi">3076</span> <span class="nb">bytes</span>
+<span class="n">Write</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1000</span>
+<span class="n">Write</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1100</span>
+<span class="n">Write</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1200</span>
+<span class="n">Write</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1300</span>
+<span class="n">Write</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1400</span>
+<span class="n">Write</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1500</span>
+<span class="n">Write</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1600</span>
+<span class="n">Write</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1700</span>
+<span class="n">Write</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1800</span>
+<span class="n">Write</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1900</span>
+<span class="n">Write</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1A00</span>
+<span class="n">Write</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1B00</span>
+<span class="n">Write</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1C00</span>
+<span class="n">Read</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1000</span>
+<span class="n">Read</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1100</span>
+<span class="n">Read</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1200</span>
+<span class="n">Read</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1300</span>
+<span class="n">Read</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1400</span>
+<span class="n">Read</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1500</span>
+<span class="n">Read</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1600</span>
+<span class="n">Read</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1700</span>
+<span class="n">Read</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1800</span>
+<span class="n">Read</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1900</span>
+<span class="n">Read</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1A00</span>
+<span class="n">Read</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1B00</span>
+<span class="n">Read</span> <span class="mi">256</span> <span class="nb">bytes</span> <span class="n">at</span> <span class="mh">0x1C00</span>
+<span class="n">Verification</span> <span class="n">OK</span>
+</pre></div>
+
+<ul>
+<li>Run user application</li>
+</ul><p>Press Reset key, we can see DS3 and DS2 are alternate blinking, that means user code Blinky is running.</p>
+
+<h2>
+<a name="8-source-code" class="anchor" href="#8-source-code"><span class="octicon octicon-link"></span></a>8 Source code</h2>
+
+<p>The source code can be found in <a href="https://github.com/MarkDing/sim3u1xx_Bootloader">https://github.com/MarkDing/sim3u1xx_Bootloader</a></p>
+      </section>
+    </div>
+
+    <!-- FOOTER  -->
+    <div id="footer_wrap" class="outer">
+      <footer class="inner">
+        <p class="copyright">Sim3u1xx bootloader maintained by <a href="https://github.com/MarkDing">MarkDing</a></p>
+        <p>Published with <a href="http://pages.github.com">GitHub Pages</a></p>
+      </footer>
+    </div>
+
+    
+
+  </body>
+</html>
